@@ -335,12 +335,36 @@ elif menu == "License Addition / Reduction":
 elif menu == "Multi-Currency Prorate Calculator":
     st.title("📅 Prorate Billing Calculator (Multi-Currency)")
 
+    # Fix 3: Custom round — decimals > .5 round up to next integer, else round normally
+    def smart_round(value):
+        import math
+        floor_val = math.floor(value)
+        decimal   = value - floor_val
+        return floor_val + 1 if decimal > 0.5 else floor_val
+
     # Sidebar setup
     st.sidebar.header("Billing Setup")
-    start_date = st.sidebar.date_input("Billing Start Date", value=date(2025, 4, 1))
-    end_date = st.sidebar.date_input("Billing End Date", value=date(2025, 5, 1))
-    existing_licenses = st.sidebar.number_input("Initial Licenses", 1, 1000, 20)
-    price_per_license = st.sidebar.number_input("Price per License (USD)", 0.1, 1000.0, 1.0)
+
+    # Fix 1: Default start date = today
+    today_mc   = date.today()
+
+    # Fix 2: When start changes, end = same day next month
+    def next_month_date(d):
+        month = d.month + 1
+        year  = d.year
+        if month > 12:
+            month = 1
+            year += 1
+        # Cap day to last valid day of next month (e.g. Jan 31 → Feb 28)
+        import calendar
+        last_day = calendar.monthrange(year, month)[1]
+        return date(year, month, min(d.day, last_day))
+
+    start_date = st.sidebar.date_input("Billing Start Date", value=today_mc)
+    end_date   = st.sidebar.date_input("Billing End Date",   value=next_month_date(start_date))
+
+    existing_licenses = st.sidebar.number_input("Initial Licenses", 1, 1000, 5)
+    price_per_license = st.sidebar.number_input("Price per License (USD)", 0.1, 1000.0, 2.99)
     base_price = existing_licenses * price_per_license
 
     st.sidebar.markdown("---")
@@ -379,29 +403,69 @@ elif menu == "Multi-Currency Prorate Calculator":
     if st.button("💰 Calculate Billing"):
         result = prorate_adjustments(start_date, end_date, base_price, events, existing_licenses, price_per_license)
 
+        symbol = {"USD": "$", "INR": "₹", "JPY": "¥", "CAD": "C$"}.get(currency, "")
+        rate   = exchange_rates[currency]
+        fee    = conversion_fee_percent / 100
+
+        def to_currency(usd_amount):
+            """Convert a single USD amount → apply exchange rate + fee → smart_round"""
+            converted = usd_amount * rate
+            if currency != "USD":
+                converted += converted * fee
+            return smart_round(converted)
+
+        # ── USD Summary ───────────────────────────────────────
         st.markdown("## 🧾 Billing Summary (Base USD)")
         st.write(f"**Base Paid:** ${result['base_paid']}")
         st.write(f"**Renewal Licenses:** {result['renewal_licenses']} → ${result['renewal_amount']}")
         st.write(f"**Total Adjustments:** ${result['total_adjustment']}")
         st.success(f"💵 **Next Bill (USD): ${result['next_bill_total']}**")
 
-        converted_total = convert_currency(result['next_bill_total'], currency, exchange_rates, conversion_fee_percent)
-        symbol = {"USD": "$", "INR": "₹", "JPY": "¥", "CAD": "C$"}.get(currency, "")
-        st.markdown(f"### 🌍 Converted to {currency}")
-        st.info(f"**Exchange Rate:** 1 USD = {exchange_rates[currency]} {currency}")
+        # ── Currency Conversion ───────────────────────────────
+        # Step 1: Convert & round per-license price first, then multiply by renewal licenses
+        # e.g. 2.99 USD → 261.55 INR → smart_round → 262, then 262 × 8 = 2096
+        per_license_converted = to_currency(price_per_license)
+        renewal_converted     = per_license_converted * result['renewal_licenses']
 
-        if currency == "USD":
-            st.success(f"**Next Bill ({currency}): {symbol}{converted_total} (No Fee Applied)**")
-        else:
-            st.success(
-                f"**Next Bill ({currency}): {symbol}{converted_total} "
-                f"(Includes {conversion_fee_percent}% Conversion Fee)**"
-            )
+        # Step 2: Convert & round each prorated adjustment individually
+        adj_converted_list = []
+        for adj in result["adjustments"]:
+            converted_adj = to_currency(adj['prorated_amount'])
+            adj_converted_list.append({
+                **adj,
+                "converted_amount": converted_adj
+            })
+
+        # Step 3: Final total = sum of individually rounded amounts
+        total_converted = renewal_converted + sum(a["converted_amount"] for a in adj_converted_list)
+
+        st.markdown(f"### 🌍 Converted to {currency}")
+        st.info(f"**Exchange Rate:** 1 USD = {rate} {currency}")
+        if currency != "USD":
+            st.info(f"**Conversion Fee:** {conversion_fee_percent}%")
+
+        st.markdown(f"**Renewal ({result['renewal_licenses']} licenses):** "
+                    f"{symbol}{renewal_converted}")
 
         st.markdown("### 📋 Adjustment Details")
-        for adj in result["adjustments"]:
+        for adj in adj_converted_list:
             change_type = "Added" if adj["change"] > 0 else "Reduced"
+            usd_val     = adj['prorated_amount']
+            conv_val    = adj['converted_amount']
             st.write(
-                f"- **{adj['date']}** → {change_type} {abs(adj['change'])} licenses "
-                f"→ ${adj['prorated_amount']} ({adj['remaining_days']} days left)"
+                f"- **{adj['date']}** → {change_type} {abs(adj['change'])} license(s) "
+                f"→ ${usd_val} USD = {symbol}{conv_val} "
+                f"({adj['remaining_days']} days remaining)"
+            )
+
+        st.divider()
+
+        if currency == "USD":
+            st.success(f"**Next Bill ({currency}): {symbol}{total_converted} (No Fee Applied)**")
+        else:
+            st.success(
+                f"**Next Bill ({currency}): {symbol}{total_converted} "
+                f"(Includes {conversion_fee_percent}% Conversion Fee | "
+                f"Renewal {symbol}{renewal_converted} + "
+                f"Adjustments {symbol}{sum(a['converted_amount'] for a in adj_converted_list)})**"
             )
