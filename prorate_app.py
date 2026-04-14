@@ -408,10 +408,12 @@ elif menu == "Multi-Currency Prorate Calculator":
         fee    = conversion_fee_percent / 100
 
         def to_currency(usd_amount):
-            """Convert a single USD amount → apply exchange rate + fee → smart_round"""
+            # USD: keep exact 2 decimal value — no rounding up
+            # Other currencies: convert + fee + smart_round (> .5 → ceil, else floor)
+            if currency == "USD":
+                return round(usd_amount, 2)
             converted = usd_amount * rate
-            if currency != "USD":
-                converted += converted * fee
+            converted += converted * fee
             return smart_round(converted)
 
         # ── USD Summary ───────────────────────────────────────
