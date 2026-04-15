@@ -48,7 +48,8 @@ def prorate_adjustments(start_date, end_date, base_price, events, existing_licen
             "date": event_date,
             "change": change,
             "remaining_days": remaining_days,
-            "prorated_amount": round(prorated_amount, 2)
+            "prorated_amount": round(prorated_amount, 2),   # for USD display
+            "prorated_amount_raw": prorated_amount           # full precision for currency conversion
         })
 
     renewal_licenses = existing_licenses + total_licenses_change
@@ -429,10 +430,17 @@ elif menu == "Multi-Currency Prorate Calculator":
         per_license_converted = to_currency(price_per_license)
         renewal_converted     = per_license_converted * result['renewal_licenses']
 
-        # Step 2: Convert & round each prorated adjustment individually
+        # Step 2: Prorated amount in local currency
+        # Formula: smart_round(per_license_converted / total_days × remaining_days × licenses)
+        # e.g. 262 (INR per license) / 31 × 19 × 1 = 160.58 → smart_round → 161
+        total_days_cycle = (end_date - start_date).days
         adj_converted_list = []
         for adj in result["adjustments"]:
-            converted_adj = to_currency(adj['prorated_amount'])
+            prorated_inr_raw = (per_license_converted / total_days_cycle) * adj["remaining_days"] * abs(adj["change"])
+            converted_adj    = smart_round(prorated_inr_raw) if currency != "USD" else round(adj["prorated_amount_raw"], 2)
+            # preserve sign for reductions
+            if adj["change"] < 0:
+                converted_adj = -converted_adj
             adj_converted_list.append({
                 **adj,
                 "converted_amount": converted_adj
